@@ -1,186 +1,107 @@
 ---
-title: "Atlantic Hurricane Activity"
+title: 'Atlantic Hurricane Activity: Extended R Analysis'
 author: "Jeana Song"
-date: "2026-10-02"
-output: pdf_document
+output:
+  pdf_document:
+    toc: true
+    toc_depth: '2'
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 7.5, fig.height = 4.4)
 ```
 
-```{r}
-library(readr)
+## Research questions and data
 
-storms <- read_csv("storms.csv", show_col_types = FALSE)
+This project extends DATASCI 306 Homework 5 by asking how hurricane activity varies **by year, season, intensity, and location**, and by comparing several statistical approaches to wind speed and central pressure. The `storms.csv` file contains repeated time-stamped observations; treating them as separate independent storms would inflate counts and overstate precision.
 
-head(storms)
+```{r load-and-analysis, results='hide', fig.show='hide'}
+# Reproduce all calculations and save the six figures.
+source("hurricane_analysis.R", local = knitr::knit_global())
 ```
 
-```{r}
-library(dplyr)
-library(tidyr)
-library(ggplot2)
+## Data validation and missingness
 
-# Part 1: Missing Value Analysis
-missing_counts <- storms |>
-  summarise(across(everything(), ~ sum(is.na(.x)))) |>
-  pivot_longer(
-    everything(),
-    names_to = "variable",
-    values_to = "n_missing"
-  ) |>
-  filter(n_missing > 0)
-
+```{r data-audit}
+print(dim(storms))
 print(missing_counts)
 ```
 
-```{r}
-# Part 2: Custom Function 1
-# Count unique hurricanes by year
-annual_hurricane_counts <- function(df) {
-  df |>
-    group_by(year, name) |>
-    summarise(
-      is_hurricane = any(status == "hurricane"),
-      is_cat5 = any(category == 5, na.rm = TRUE),
-      .groups = "drop"
-    ) |>
-    group_by(year) |>
-    summarise(
-      hurricanes = sum(is_hurricane),
-      category5 = sum(is_cat5),
-      .groups = "drop"
-    )
-}
+The category variable is naturally missing in many records of non-hurricane systems; the wind and pressure fields used here do not require imputation. We distinguish **655 storm-year groups** from **319 storms observed at hurricane strength**.
 
-yearly <- annual_hurricane_counts(storms)
+## Annual hurricane counts
+
+The custom `annual_hurricane_counts()` function counts each distinct `(year, name)` pair only once, even if the same storm has dozens of measurements.
+
+```{r annual-counts}
 print(head(yearly))
-```
-
-```{r}
-# Part 3: Hurricane Frequency Visualization
-p1 <- yearly |>
-  pivot_longer(
-    c(hurricanes, category5),
-    names_to = "type",
-    values_to = "n"
-  ) |>
-  ggplot(aes(x = year, y = n)) +
-  geom_line(color = "#1B6A84", linewidth = 0.7) +
-  facet_wrap(~ type, ncol = 1, scales = "free_y") +
-  labs(
-    title = "Annual Hurricane Activity (1975-2022)",
-    x = "Year",
-    y = "Number of Distinct Storms"
-  ) +
-  theme_minimal()
-
 print(p1)
 ```
 
-```{r}
-# Part 4: Storm-Level Data Cleaning
-# Select one peak-wind observation per storm
-peak <- storms |>
-  filter(!is.na(wind), !is.na(pressure)) |>
-  group_by(year, name) |>
-  slice_max(
-    order_by = wind,
-    n = 1,
-    with_ties = FALSE
-  ) |>
-  ungroup()
+## Seasonality: month of first hurricane classification
 
-stopifnot(nrow(peak) == 655L)
+This counts each hurricane in the **first month it was observed with hurricane status**; it is not the same as storm genesis or the number of recorded observations per month.
+
+```{r seasonality}
+print(monthly_hurricanes)
+print(p3)
 ```
 
-```{r}
-# Part 5: Custom Function 2
-# Convert continuous variables into three groups
-to_tercile <- function(x) {
-  cuts <- quantile(
-    x,
-    probs = c(1/3, 2/3),
-    na.rm = TRUE
-  )
+## Annual intensity changes
 
-  if (cuts[1] >= cuts[2]) {
-    stop("Tercile breakpoints must differ")
-  }
+We select one peak-wind hurricane-stage record per named storm and summarize its wind speed by year. The fitted trend is descriptive: observation changes and natural variability prevent a simple climate-causation interpretation.
 
-  cut(
-    x,
-    breaks = c(-Inf, cuts, Inf),
-    labels = c("Low", "Medium", "High"),
-    include.lowest = TRUE
-  )
-}
+```{r intensity-trends}
+print(head(annual_intensity))
+print(coef(summary(intensity_trend)))
+print(p4)
 ```
 
-```{r}
-# Part 6: Chi-Squared Test
-peak <- peak |>
-  mutate(
-    wind_group = to_tercile(wind),
-    pressure_group = to_tercile(pressure)
-  )
+## Wind versus pressure: Pearson, Spearman, OLS
 
-frequency <- with(
-  peak,
-  table(wind_group, pressure_group)
-)
+The first two correlations assess different patterns. **Pearson** measures linear association; **Spearman** measures monotonic rank association. The fitted ordinary least-squares regression summarizes the average change in pressure with wind speed, without claiming a causal relationship.
 
-chi <- chisq.test(frequency)
-
-print(frequency)
-print(chi)
-print(min(chi$expected))
-
-# Pearson correlation
-print(cor(peak$wind, peak$pressure))
-```
-
-```{r}
-# Part 7: Wind-Pressure Visualization
-p2 <- ggplot(
-  peak,
-  aes(x = wind, y = pressure)
-) +
-  geom_point(
-    color = "#1B6A84",
-    alpha = 0.30
-  ) +
-  geom_smooth(
-    method = "lm",
-    se = FALSE,
-    color = "#D4764E"
-  ) +
-  labs(
-    title = "Wind Speed and Pressure at Storm Peak",
-    x = "Peak Wind Speed (knots)",
-    y = "Central Pressure (mb)"
-  ) +
-  theme_minimal()
-
+```{r association}
+cat("Pearson r:", unname(pearson_result$estimate), "\n")
+cat("Spearman rho:", unname(spearman_result$estimate), "\n")
+print(coef(summary(pressure_model)))
+cat("R squared:", summary(pressure_model)$r.squared, "\n")
 print(p2)
 ```
 
-```{r}
-# Part 8: Export Visualizations
-ggsave(
-  "annual_hurricane_counts.png",
-  plot = p1,
-  width = 7,
-  height = 4.2,
-  dpi = 300
-)
+## Chi-squared test on quantile groups
 
-ggsave(
-  "storm_peak_wind_pressure.png",
-  plot = p2,
-  width = 7,
-  height = 4.2,
-  dpi = 300
-)
+The `to_tercile()` function creates wind and pressure classes from their 1/3 and 2/3 quantiles, then a chi-squared test examines their association. The variables were originally continuous; this grouping sacrifices information and is presented as a complementary exercise, not a replacement for correlation/regression.
+
+```{r chi-squared}
+print(frequency)
+print(chi)
+cat("Minimum expected cell count:", min(chi$expected), "\n")
 ```
+
+## Category comparison and geographic patterns
+
+We compare **pressure across hurricane wind-based categories**, rather than treating category and wind speed as independent characteristics. The spatial display uses **one peak-intensity location per hurricane** rather than all observations, which would overrepresent longer-lived storms.
+
+```{r categories}
+print(p5)
+```
+
+```{r spatial}
+print(p6)
+```
+
+## Interpretation and limitations
+
+- Seasonal counts represent the first **hurricane-status** month, not the formation month.
+- Data points in wind-pressure analysis represent distinct `(year, name)` pairs, using a maximum-wind record; the choice of record affects the estimates.
+- The OLS model is descriptive, not causal; linear-model assumptions should be checked before using it for formal prediction.
+- Changes in detection/reporting practices and large year-to-year variability complicate long-run trend claims.
+- Coordinates mark locations at peak recorded intensity, not hurricane origin or landfall.
+
+**Data source:** `storms.csv` from the `dplyr` v1.1.4 data repository. **Provenance:** Adapted and extended from DATASCI 306 HW5.
